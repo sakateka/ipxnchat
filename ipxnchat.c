@@ -1,39 +1,43 @@
 #include <curses.h>
-#include <string.h>
-#include <stdlib.h>
 
-WINDOW* newBoxedWindow(int lines, int cols, int y, int x) {
-	WINDOW *topOut = newwin(lines, cols,y,x);
-	refresh();
-    box(topOut, '|', '-');
-	wrefresh(topOut);
-    WINDOW *new = newwin(lines-2, cols-2,y+1,x+1);
-	wrefresh(new);
-    return new;
+void draw_screen(WINDOW **top, WINDOW **bottom) {
+    clear();
+
+    int y, x;
+    getmaxyx(stdscr, y, x);
+    int halfy = y/2;
+
+    box(stdscr, 0, 0);
+    mvaddch(halfy, 0, ACS_LTEE);
+    mvaddch(halfy, x-1, ACS_RTEE);
+    mvhline(halfy, 1, 0, x-2);
+    mvaddch(y-3, 0, ACS_LTEE);
+    mvaddch(y-3, x-1, ACS_RTEE);
+    mvhline(y-3, 1, 0, x-2);
+    refresh();
+    if (*top == NULL) {
+        *top = newwin(halfy-2, x-2, 1, 1);
+    }
+    wresize(*top, halfy-2, x-2);
+    wrefresh(*top);
+    if (*bottom == NULL) {
+        *bottom = newwin(halfy-4, x-2, halfy+1, 1);
+    }
+    wresize(*bottom, halfy-4, x-2);
+    wrefresh(*bottom);
 }
 
 int main() {
-	initscr();
+    WINDOW *top = NULL, *bottom = NULL;
+    initscr();
     noecho();
-    box(stdscr, '|', '=');
-	refresh();
-
-	int halfy = LINES/2;
-	char text[]= "Hello World!!!";
-    char *bigText = calloc(strlen(text), 200);
-    for (int i = 0; i < 200 ; i++) {
-        bigText = strcat(bigText, text);
-    }
-
-	WINDOW *top = newBoxedWindow(halfy-1, COLS-2, 1, 1);
-    waddnstr(top, bigText, -1);
-    wrefresh(top);
-
-	WINDOW *bottom = newBoxedWindow(halfy-1, COLS-2, halfy, 1);
-    waddnstr(bottom, bigText, -1);
-    wrefresh(bottom);
-	getch();
-
-	endwin();
-	return 0;
+    draw_screen(&top, &bottom);
+    int key;
+    while ((key = getch()) != 'q') {
+        if (key == KEY_RESIZE) {
+            draw_screen(&top, &bottom);
+        }
+    };
+    endwin();
+    return 0;
 }
