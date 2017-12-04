@@ -155,7 +155,7 @@ void user_input() {
     wrefresh(localWin);
 }
 
-int ipx_bind(u_int64_t net){
+int ipx_bind(unsigned int net){
     int fd = socket(AF_IPX, SOCK_DGRAM, AF_IPX);
     if (fd < 0) {
         endwin();
