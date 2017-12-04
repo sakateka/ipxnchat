@@ -3,6 +3,8 @@
 #include <unistd.h>
 #include <string.h>
 #include <stdlib.h>
+#include <errno.h>
+#include <getopt.h>
 #include <signal.h>
 #include <ncursesw/ncurses.h>
 #include <sys/types.h>
@@ -16,13 +18,20 @@ typedef struct t_inputBuffer {
     char *text;
 } t_inputBuffer;
 
-WINDOW *remote, *local, *input;
+typedef struct t_Args {
+    u_int local_network;
+    u_int remote_network;
+    u_int remote_addr[6];
+} t_Args;
+
+WINDOW *remoteWin, *localWin, *inputWin;
 // initial buf size is 80 chars
 t_inputBuffer* buf = &(t_inputBuffer){.size=80};
 
 // ipx sockaddr bind to
 struct sockaddr_ipx sipx;
-struct sockaddr_ipx raddr;
+// ipx remote socket addr
+struct sockaddr_ipx ripx;
 
 void init_colors() {
    start_color();
@@ -54,24 +63,24 @@ void draw_main_box() {
 
 void draw_output_win() {
     int y = LINES, x = COLS, halfy = y/2;
-    remote = subwin(stdscr, halfy-2, x-4, 1, 2);
-    wrefresh(remote);
-    scrollok(remote, TRUE);
-    local = subwin(stdscr, halfy-4, x-4, halfy+1, 2);
-    wrefresh(local);
-    scrollok(local, TRUE);
+    remoteWin = subwin(stdscr, halfy-2, x-4, 1, 2);
+    wrefresh(remoteWin);
+    scrollok(remoteWin, TRUE);
+    localWin = subwin(stdscr, halfy-4, x-4, halfy+1, 2);
+    wrefresh(localWin);
+    scrollok(localWin, TRUE);
 }
 
 void draw_input_win() {
     int y = LINES, x = COLS, halfy = y/2;
-    input = subwin(stdscr, 1, x-4, y-2, 2);
-    wrefresh(input);
+    inputWin = subwin(stdscr, 1, x-4, y-2, 2);
+    wrefresh(inputWin);
 }
 
 void init_ui() {
     if (initscr() == NULL) {
-        fprintf(stderr, "Failed to initialize screen");
-        exit(1);
+        fprintf(stderr, "Failed to initialize screen\n");
+        exit(EXIT_FAILURE);
     }
     init_colors();
     cbreak();
@@ -83,10 +92,10 @@ void init_ui() {
 }
 
 void refresh_all_win(){
-    wrefresh(remote);
-    wrefresh(local);
-    wcursyncup(input);
-    wrefresh(input);
+    wrefresh(remoteWin);
+    wrefresh(localWin);
+    wcursyncup(inputWin);
+    wrefresh(inputWin);
 }
 
 void resize_handler(int sig) {
@@ -96,9 +105,6 @@ void resize_handler(int sig) {
     draw_main_box();
     draw_output_win();
     draw_input_win();
-    static int counter = 0;
-    wprintw(input, "");
-    wprintw(input, "sig handler %d", ++counter);
     refresh_all_win();
     signal(SIGWINCH, resize_handler);
 }
@@ -112,14 +118,14 @@ void user_input() {
         if (c == KEY_RESIZE || c == ERR) {
            continue;
         } else if (c == KEY_BACKSPACE || c == KEY_LEFT) {
-            wprintw(input, "\b \b\0");
+            wprintw(inputWin, "\b \b\0");
             if (buf->idx > 0) {
                 full=FALSE;
                 buf->text[buf->idx++] = '\b';
             }
-            wrefresh(input);
+            wrefresh(inputWin);
         } else {
-            getyx(input, cur_y, cur_x);
+            getyx(inputWin, cur_y, cur_x);
             if (!full && cur_x < COLS - 5) {
                 if (buf->idx >= buf->size) {
                     buf->text = realloc(buf->text, sizeof(char)*(buf->size*2));
@@ -128,32 +134,32 @@ void user_input() {
                     } else {
                         endwin();
                         perror("realloc");
-                        exit(1);
+                        exit(EXIT_FAILURE);
                     }
                 }
                 buf->text[buf->idx++] = c;
-                wprintw(input, "%s", (char*)&c);
+                wprintw(inputWin, "%s", (char*)&c);
             } else {
                 full = TRUE;
                 buf->text[buf->idx] = c;
-                wprintw(input, "\b%s", (char*)&c);
+                wprintw(inputWin, "\b%s", (char*)&c);
             }
-            wrefresh(input);
+            wrefresh(inputWin);
         }
     }
     buf->text[buf->idx] = '\0';
-    wclear(input);
-    wrefresh(input);
-    wprintw(local, "%s\n", buf->text);
-    wrefresh(local);
+    wclear(inputWin);
+    wrefresh(inputWin);
+    wprintw(localWin, "%s\n", buf->text);
+    wrefresh(localWin);
 }
 
-int ipx_bind(int net){
+int ipx_bind(u_int net){
     int fd = socket(AF_IPX, SOCK_DGRAM, AF_IPX);
     if (fd < 0) {
         endwin();
         perror("IPX: socket: ");
-        exit(1);
+        exit(EXIT_FAILURE);
     }
     sipx.sipx_family = AF_IPX;
     sipx.sipx_network = htonl(net);
@@ -163,7 +169,7 @@ int ipx_bind(int net){
     if (bind(fd, (struct sockaddr *) &sipx, sizeof(sipx)) < 0) {
         endwin();
         perror("IPX: bind: ");
-        exit(1);
+        exit(EXIT_FAILURE);
     }
     socklen_t len = sizeof(sipx);
     // get addr where we are bound to
@@ -171,29 +177,12 @@ int ipx_bind(int net){
     return fd;
 }
 
-_Bool is_valid(char c) {
-    return (c >= 'a' && c <= 'f') || (c >= 'a' && c <= 'F') || (c >= '0' && c <= '9');
-}
-
-void ipx_set_remote_addr(char remote_addr[12]) {
-    char hex[5] = "0x00\0";
-    for (int i = 0; i < 6; i++) {
-        char f = remote_addr[i*2];
-        char s = remote_addr[i*2+1];
-        if (is_valid(f) && is_valid (s)) {
-            hex[2] = f;
-            hex[3] = s;
-        } else {
-            endwin();
-            printf(
-                "Invalid remote addr %12s, expect MAC address in format 'AABBCCDDEEFF'\n",
-                remote_addr
-            );
-            exit(1);
-        }
-        wprintw(remote, "%s\n", hex);
-        sipx.sipx_node[i] = atoi(hex);
-    }
+void ipx_set_remote_addr(u_int remote_addr[6]) {
+    memcpy(ripx.sipx_node, remote_addr, 6);
+    wprintw(remoteWin, "Remote addr: %02X:%02X:%02X:%02X:%02X:%02X\n",
+            remote_addr[0], remote_addr[1], remote_addr[2],
+            remote_addr[3], remote_addr[4], remote_addr[5]);
+    wrefresh(remoteWin);
 }
 
 void ipx_send(int fd, const char *msg, uint msg_size) {
@@ -207,21 +196,103 @@ void ipx_send(int fd, const char *msg, uint msg_size) {
         if (result < 0) {
             endwin();
             perror("IPX: send: ");
-            exit(1);
+            exit(EXIT_FAILURE);
         }
     }
 }
 
-int main() {
+void usage(char *name, int exit_status) {
+    fprintf(stderr, "Usage: %s [-n network] [-r] [network:]remote_addr\n"
+            "   -n NETWORK    - ipx network number like 0x1 or 0x33234 (hex)\n"
+            "   -r [NET]:ADDR - remote network and addr (addr is MAC add in hex format)\n",
+            name);
+    exit(exit_status);
+}
+
+t_Args* get_args(int argc, char *argv[]) {
+    char opt;
+    char *end;
+    ssize_t sscanf_result;
+    char *delimiter;
+    if (argc < 3) {
+        usage(argv[0], EXIT_FAILURE);
+    }
+    t_Args* args = (t_Args*)calloc(1, sizeof(t_Args));
+    while ((opt = getopt(argc, argv, "hn:r:")) != -1) {
+        switch (opt) {
+        case 'n':
+            args->local_network = strtoul(optarg, &end, 0);
+            if (errno != 0 || *end != '\0') {
+                fprintf(stderr, "Failed to parse network number %s\n", optarg);
+                exit(EXIT_FAILURE);
+            }
+            break;
+        case 'r':
+            delimiter = strchr(optarg, ':');
+            if (delimiter != NULL) {
+                *delimiter = '\0';
+                args->local_network = strtoul(optarg, &end, 0);
+                if (errno != 0 || *end != '\0') {
+                    fprintf(stderr,
+                        "Failed to parse remte network number %s\n", optarg
+                    );
+                    exit(EXIT_FAILURE);
+                }
+                *delimiter = ':';
+                delimiter++;
+            } else {
+                delimiter = optarg;
+            }
+            sscanf_result = strspn(delimiter, "0123456789abcdefABCDEF");
+            if (sscanf_result == 12) {
+                sscanf_result = sscanf(
+                    delimiter, "%2x%2x%2x%2x%2x%2x",
+                    &args->remote_addr[0], &args->remote_addr[1],
+                    &args->remote_addr[2], &args->remote_addr[3],
+                    &args->remote_addr[4], &args->remote_addr[5]
+                );
+            } else {
+                if (sscanf_result > 12) {
+                    fprintf(stderr, "Max length is 12 hex digits\n");
+                }
+                fprintf(stderr, "Invalid remote addr, char at %ld, '%c'\n",
+                        sscanf_result,
+                        delimiter[sscanf_result]);
+                exit(EXIT_FAILURE);
+            }
+            if (errno != 0 || sscanf_result < 6) {
+                fprintf(stderr,
+                    "Invalid remote addr %s"
+                    ", expect MAC address in format 'AABBCCDDEEFF'\n"
+                    "Parsed part is: %02X%02X%02X%02X%02X%02X\n",
+                    delimiter,
+                    args->remote_addr[0], args->remote_addr[1],
+                    args->remote_addr[2], args->remote_addr[3],
+                    args->remote_addr[4], args->remote_addr[5]
+                );
+                exit(EXIT_FAILURE);
+            }
+            break;
+        case 'h':
+            usage(argv[0], EXIT_SUCCESS);
+        default: /* '?' */
+            usage(argv[0], EXIT_FAILURE);
+        }
+    }
+    return args;
+}
+
+int main(int argc, char *argv[]) {
+
+    t_Args* args = get_args(argc, argv);
+
     signal(SIGWINCH, resize_handler);
     setlocale(LC_ALL, ""); /* make sure UTF8 */
     buf->text = calloc(buf->size, sizeof(char));
 
     init_ui();
-    int net_num = 0;
-    int fd = ipx_bind(net_num);
-    char remote_addr[12] = "abcdeffedcba";
-    ipx_set_remote_addr(remote_addr);
+    int fd = ipx_bind(args->local_network);
+    ipx_set_remote_addr(args->remote_addr);
 
     while (TRUE) {
         refresh_all_win();
