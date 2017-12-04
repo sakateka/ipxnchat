@@ -27,7 +27,7 @@ typedef struct t_Args {
 t_Args args = {0};
 
 WINDOW *remoteWin, *localWin, *inputWin;
-char remoteTitle[45] = "[ Remote ]\0";
+char remoteTitle[46] = "[ Remote ]\0";
 char localTitle[45] = "[ Local ]\0";
 // initial buf size is 80 chars
 t_inputBuffer* buf = &(t_inputBuffer){.size=80};
@@ -54,13 +54,17 @@ void init_colors() {
 void draw_main_box() {
     int y = LINES, x = COLS, halfy = y/2;
     box(stdscr, 0, 0);
+    attron(COLOR_PAIR(7));
     mvprintw(0, 3, remoteTitle);
+    attron(COLOR_PAIR(1));
 
     mvaddch(halfy, 0, ACS_LTEE);
     mvhline(halfy, 1, 0, x-2);
     mvaddch(halfy, x-1, ACS_RTEE);
 
+    attron(COLOR_PAIR(6));
     mvprintw(halfy, 3, localTitle);
+    attron(COLOR_PAIR(1));
 
     mvaddch(y-3, 0, ACS_LTEE);
     mvhline(y-3, 1, 0, x-2);
@@ -187,7 +191,9 @@ int ipx_bind(){
             sipx.sipx_node[0], sipx.sipx_node[1], sipx.sipx_node[2],
             sipx.sipx_node[3], sipx.sipx_node[4], sipx.sipx_node[5],
             ntohs(sipx.sipx_port));
+    attron(COLOR_PAIR(6));
     mvprintw(LINES/2, 3, localTitle);
+    attron(COLOR_PAIR(1));
     refresh();
     return fd;
 }
@@ -195,12 +201,15 @@ int ipx_bind(){
 void ipx_set_remote_addr() {
     memcpy(sipx.sipx_node, args.remote_addr, 6);
     sipx.sipx_port = htons(0x5000);
-    snprintf(remoteTitle, 45, "[ Remote addr: 0x%08X:%02X%02X%02X%02X%02X%02X:%04X ]",
+    sipx.sipx_network = htonl(args.remote_network);
+    snprintf(remoteTitle, 46, "[ Remote addr: 0x%08X:%02X%02X%02X%02X%02X%02X:%04X ]",
             ntohl(sipx.sipx_network),
             sipx.sipx_node[0], sipx.sipx_node[1], sipx.sipx_node[2],
             sipx.sipx_node[3], sipx.sipx_node[4], sipx.sipx_node[5],
             ntohs(sipx.sipx_port));
+    attron(COLOR_PAIR(7));
     mvprintw(0, 3, remoteTitle);
+    attron(COLOR_PAIR(1));
     refresh();
 }
 
@@ -302,6 +311,16 @@ void get_args(int argc, char *argv[]) {
     }
 }
 
+void print_time(){
+    time_t ts = time(NULL);
+    struct tm *timestamp = localtime(&ts);
+    wattron(remoteWin, COLOR_PAIR(2));
+    wprintw(remoteWin, "%02d:%02d:%02d", timestamp->tm_hour, timestamp->tm_min, timestamp->tm_sec);
+    wattroff(remoteWin, COLOR_PAIR(1));
+    wprintw(remoteWin, " | ");
+
+}
+
 void *receiver(void *arg) {
     char rBuf[2048];
 
@@ -319,7 +338,7 @@ void *receiver(void *arg) {
     wrefresh(remoteWin);
 
     ripx.sipx_family = AF_IPX;
-    ripx.sipx_network = htonl(args.remote_network);
+    ripx.sipx_network = htonl(args.local_network);
     ripx.sipx_port = htons(0x5000);
     ripx.sipx_type = 17;
     socklen_t len = sizeof(ripx);
@@ -343,6 +362,12 @@ void *receiver(void *arg) {
             break;
         }
         rBuf[result] = '\0';
+        print_time();
+        wattron(remoteWin, COLOR_PAIR(3));
+        wprintw(remoteWin, "%02X%02X%02X%02X%02X%02X >>> ",
+                ripx.sipx_node[0], ripx.sipx_node[1], ripx.sipx_node[2],
+                ripx.sipx_node[3], ripx.sipx_node[4], ripx.sipx_node[5]);
+        wattron(remoteWin, COLOR_PAIR(1));
         wprintw(remoteWin, "%s\n", rBuf);
         wrefresh(remoteWin);
         refresh();
