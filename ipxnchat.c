@@ -52,6 +52,7 @@ void draw_main_box() {
     mvaddch(halfy, 0, ACS_LTEE);
     mvhline(halfy, 1, 0, x-2);
     mvaddch(halfy, x-1, ACS_RTEE);
+
     mvprintw(halfy, 3, "[ You ]");
 
     mvaddch(y-3, 0, ACS_LTEE);
@@ -177,21 +178,26 @@ int ipx_bind(u_int net){
     return fd;
 }
 
-void ipx_set_remote_addr(u_int remote_addr[6]) {
-    memcpy(ripx.sipx_node, remote_addr, 6);
-    wprintw(remoteWin, "Remote addr: %02X:%02X:%02X:%02X:%02X:%02X\n",
-            remote_addr[0], remote_addr[1], remote_addr[2],
-            remote_addr[3], remote_addr[4], remote_addr[5]);
-    wrefresh(remoteWin);
+void ipx_set_remote_addr(t_Args *args) {
+    ripx.sipx_family = AF_IPX;
+    ripx.sipx_network = htonl(args->remote_network);
+    ripx.sipx_port = htonl(0x5000);
+    ripx.sipx_type = 17;
+    memcpy(ripx.sipx_node, args->remote_addr, 6);
+    mvprintw(0, 3, "[ Remote addr: %08X:%02X%02X%02X%02X%02X%02X ]",
+            args->remote_network,
+            args->remote_addr[0], args->remote_addr[1], args->remote_addr[2],
+            args->remote_addr[3], args->remote_addr[4], args->remote_addr[5]);
+    refresh();
 }
 
-void ipx_send(int fd, const char *msg, uint msg_size) {
+void ipx_send(int fd) {
     if (buf->idx > 0) {
         ssize_t result = sendto(
             fd,
-            msg, msg_size,
+            buf->text, buf->idx+1,
             0,
-            (struct sockaddr *)&sipx, sizeof(sipx)
+            (struct sockaddr *)&ripx, sizeof(ripx)
         );
         if (result < 0) {
             endwin();
@@ -231,7 +237,7 @@ t_Args* get_args(int argc, char *argv[]) {
             delimiter = strchr(optarg, ':');
             if (delimiter != NULL) {
                 *delimiter = '\0';
-                args->local_network = strtoul(optarg, &end, 0);
+                args->remote_network = strtoul(optarg, &end, 0);
                 if (errno != 0 || *end != '\0') {
                     fprintf(stderr,
                         "Failed to parse remte network number %s\n", optarg
@@ -286,18 +292,18 @@ int main(int argc, char *argv[]) {
 
     t_Args* args = get_args(argc, argv);
 
-    signal(SIGWINCH, resize_handler);
     setlocale(LC_ALL, ""); /* make sure UTF8 */
     buf->text = calloc(buf->size, sizeof(char));
 
     init_ui();
+    signal(SIGWINCH, resize_handler);
     int fd = ipx_bind(args->local_network);
-    ipx_set_remote_addr(args->remote_addr);
+    ipx_set_remote_addr(args);
 
     while (TRUE) {
         refresh_all_win();
         user_input();
-        ipx_send(fd, buf->text, buf->idx+1);
+        ipx_send(fd);
     };
     endwin();
     return 0;
