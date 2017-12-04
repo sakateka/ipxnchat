@@ -1,4 +1,4 @@
-CFLAGS+=-Wall -pedantic -std=c11
+CFLAGS+=-Wall -pedantic -fdiagnostics-show-category=name -std=c11
 
 ipxnchat: ipxnchat.c
-	clang $(CFLAGS) $< -o $@ -lncursesw
+	clang $(CFLAGS) $< -o $@ -lncursesw -lpthread

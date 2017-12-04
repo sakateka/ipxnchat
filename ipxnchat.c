@@ -11,6 +11,7 @@
 #include <linux/ipx.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <pthread.h>
 
 typedef struct t_inputBuffer {
     int size;
@@ -19,19 +20,24 @@ typedef struct t_inputBuffer {
 } t_inputBuffer;
 
 typedef struct t_Args {
-    unsigned int local_network;
-    unsigned int remote_network;
-    unsigned int remote_addr[6];
+    u_int32_t local_network;
+    u_int32_t remote_network;
+    unsigned char remote_addr[6];
 } t_Args;
+t_Args args = {0};
 
 WINDOW *remoteWin, *localWin, *inputWin;
+char remoteTitle[45] = "[ Remote ]\0";
+char localTitle[45] = "[ Local ]\0";
 // initial buf size is 80 chars
 t_inputBuffer* buf = &(t_inputBuffer){.size=80};
 
 // ipx sockaddr bind to
 struct sockaddr_ipx sipx;
 // ipx remote socket addr
-struct sockaddr_ipx ripx;
+
+// receiver
+pthread_t rx_thread;
 
 void init_colors() {
    start_color();
@@ -48,12 +54,13 @@ void init_colors() {
 void draw_main_box() {
     int y = LINES, x = COLS, halfy = y/2;
     box(stdscr, 0, 0);
-    mvprintw(0, 3, "[ Remote ]");
+    mvprintw(0, 3, remoteTitle);
+
     mvaddch(halfy, 0, ACS_LTEE);
     mvhline(halfy, 1, 0, x-2);
     mvaddch(halfy, x-1, ACS_RTEE);
 
-    mvprintw(halfy, 3, "[ You ]");
+    mvprintw(halfy, 3, localTitle);
 
     mvaddch(y-3, 0, ACS_LTEE);
     mvhline(y-3, 1, 0, x-2);
@@ -93,7 +100,6 @@ void init_ui() {
 }
 
 void refresh_all_win(){
-    wrefresh(remoteWin);
     wrefresh(localWin);
     wcursyncup(inputWin);
     wrefresh(inputWin);
@@ -155,39 +161,46 @@ void user_input() {
     wrefresh(localWin);
 }
 
-int ipx_bind(unsigned int net){
+int ipx_bind(){
     int fd = socket(AF_IPX, SOCK_DGRAM, AF_IPX);
     if (fd < 0) {
         endwin();
         perror("IPX: socket: ");
         exit(EXIT_FAILURE);
     }
+    socklen_t len = sizeof(sipx);
+
     sipx.sipx_family = AF_IPX;
-    sipx.sipx_network = htonl(net);
-    sipx.sipx_port = htons(0x5000);
+    sipx.sipx_network = htonl(args.local_network);
+    sipx.sipx_port = 0;
     sipx.sipx_type = 17;
 
-    if (bind(fd, (struct sockaddr *) &sipx, sizeof(sipx)) < 0) {
+    if (bind(fd, (struct sockaddr *) &sipx, len) < 0) {
         endwin();
         perror("IPX: bind: ");
         exit(EXIT_FAILURE);
     }
-    socklen_t len = sizeof(sipx);
     // get addr where we are bound to
     getsockname(fd, (struct sockaddr *) &sipx, &len);
+    snprintf(localTitle, 45, "[ Local addr: 0x%08X:%02X%02X%02X%02X%02X%02X:%04X ]",
+            ntohl(sipx.sipx_network),
+            sipx.sipx_node[0], sipx.sipx_node[1], sipx.sipx_node[2],
+            sipx.sipx_node[3], sipx.sipx_node[4], sipx.sipx_node[5],
+            ntohs(sipx.sipx_port));
+    mvprintw(LINES/2, 3, localTitle);
+    refresh();
     return fd;
 }
 
-void ipx_set_remote_addr(t_Args *args) {
-    ripx.sipx_family = AF_IPX;
-    ripx.sipx_network = htonl(args->remote_network);
-    ripx.sipx_port = htonl(0x5000);
-    ripx.sipx_type = 17;
-    memcpy(ripx.sipx_node, args->remote_addr, 6);
-    mvprintw(0, 3, "[ Remote addr: %08X:%02X%02X%02X%02X%02X%02X ]",
-            args->remote_network,
-            args->remote_addr[0], args->remote_addr[1], args->remote_addr[2],
-            args->remote_addr[3], args->remote_addr[4], args->remote_addr[5]);
+void ipx_set_remote_addr() {
+    memcpy(sipx.sipx_node, args.remote_addr, 6);
+    sipx.sipx_port = htons(0x5000);
+    snprintf(remoteTitle, 45, "[ Remote addr: 0x%08X:%02X%02X%02X%02X%02X%02X:%04X ]",
+            ntohl(sipx.sipx_network),
+            sipx.sipx_node[0], sipx.sipx_node[1], sipx.sipx_node[2],
+            sipx.sipx_node[3], sipx.sipx_node[4], sipx.sipx_node[5],
+            ntohs(sipx.sipx_port));
+    mvprintw(0, 3, remoteTitle);
     refresh();
 }
 
@@ -197,7 +210,7 @@ void ipx_send(int fd) {
             fd,
             buf->text, buf->idx+1,
             0,
-            (struct sockaddr *)&ripx, sizeof(ripx)
+            (struct sockaddr *)&sipx, sizeof(sipx)
         );
         if (result < 0) {
             endwin();
@@ -215,7 +228,7 @@ void usage(char *name, int exit_status) {
     exit(exit_status);
 }
 
-t_Args* get_args(int argc, char *argv[]) {
+void get_args(int argc, char *argv[]) {
     char opt;
     char *end;
     ssize_t sscanf_result;
@@ -223,11 +236,10 @@ t_Args* get_args(int argc, char *argv[]) {
     if (argc < 3) {
         usage(argv[0], EXIT_FAILURE);
     }
-    t_Args* args = (t_Args*)calloc(1, sizeof(t_Args));
     while ((opt = getopt(argc, argv, "hn:r:")) != -1) {
         switch (opt) {
         case 'n':
-            args->local_network = strtoul(optarg, &end, 0);
+            args.local_network = strtol(optarg, &end, 0);
             if (errno != 0 || *end != '\0') {
                 fprintf(stderr, "Failed to parse network number %s\n", optarg);
                 exit(EXIT_FAILURE);
@@ -237,7 +249,7 @@ t_Args* get_args(int argc, char *argv[]) {
             delimiter = strchr(optarg, ':');
             if (delimiter != NULL) {
                 *delimiter = '\0';
-                args->remote_network = strtoul(optarg, &end, 0);
+                args.remote_network = strtol(optarg, &end, 0);
                 if (errno != 0 || *end != '\0') {
                     fprintf(stderr,
                         "Failed to parse remte network number %s\n", optarg
@@ -253,9 +265,12 @@ t_Args* get_args(int argc, char *argv[]) {
             if (sscanf_result == 12) {
                 sscanf_result = sscanf(
                     delimiter, "%2x%2x%2x%2x%2x%2x",
-                    &args->remote_addr[0], &args->remote_addr[1],
-                    &args->remote_addr[2], &args->remote_addr[3],
-                    &args->remote_addr[4], &args->remote_addr[5]
+                    #pragma clang diagnostic push
+                    #pragma clang diagnostic ignored "-Wformat"
+                    &args.remote_addr[0], &args.remote_addr[1],
+                    &args.remote_addr[2], &args.remote_addr[3],
+                    &args.remote_addr[4], &args.remote_addr[5]
+                    #pragma clang diagnostic pop
                 );
             } else {
                 if (sscanf_result > 12) {
@@ -272,9 +287,9 @@ t_Args* get_args(int argc, char *argv[]) {
                     ", expect MAC address in format 'AABBCCDDEEFF'\n"
                     "Parsed part is: %02X%02X%02X%02X%02X%02X\n",
                     delimiter,
-                    args->remote_addr[0], args->remote_addr[1],
-                    args->remote_addr[2], args->remote_addr[3],
-                    args->remote_addr[4], args->remote_addr[5]
+                    args.remote_addr[0], args.remote_addr[1],
+                    args.remote_addr[2], args.remote_addr[3],
+                    args.remote_addr[4], args.remote_addr[5]
                 );
                 exit(EXIT_FAILURE);
             }
@@ -285,21 +300,78 @@ t_Args* get_args(int argc, char *argv[]) {
             usage(argv[0], EXIT_FAILURE);
         }
     }
-    return args;
+}
+
+void *receiver(void *arg) {
+    char rBuf[2048];
+
+    struct sockaddr_ipx ripx;
+
+    wprintw(remoteWin, "Create socket: ");
+    wrefresh(remoteWin);
+	int s = socket(AF_IPX, SOCK_DGRAM, AF_IPX);
+	if (s < 0) {
+        wprintw(remoteWin, "IPX: socket: %s\n", strerror(errno));
+        wrefresh(remoteWin);
+        return NULL;
+	}
+    wprintw(remoteWin, "Success\n");
+    wrefresh(remoteWin);
+
+    ripx.sipx_family = AF_IPX;
+    ripx.sipx_network = htonl(args.remote_network);
+    ripx.sipx_port = htons(0x5000);
+    ripx.sipx_type = 17;
+    socklen_t len = sizeof(ripx);
+
+    wprintw(remoteWin, "Bind receive socket: ");
+    wrefresh(remoteWin);
+	int result = bind(s, (struct sockaddr *) &ripx, len);
+	if (result < 0) {
+        wprintw(remoteWin, "IPX: bind: %s\n", strerror(errno));
+        wrefresh(remoteWin);
+        return NULL;
+	}
+    wprintw(remoteWin, "Success\n");
+    wrefresh(remoteWin);
+    wprintw(remoteWin, "Success start receive thread\n");
+    wrefresh(remoteWin);
+    while (1) {
+        ssize_t result = recvfrom(s, &rBuf, sizeof(rBuf), 0, (struct sockaddr *) &ripx, &len);
+        if (result < 0) {
+            wprintw(remoteWin, "IPX: recvfrom: %s\n", strerror(errno));
+            break;
+        }
+        rBuf[result] = '\0';
+        wprintw(remoteWin, "%s\n", rBuf);
+        wrefresh(remoteWin);
+        refresh();
+    }
+    return NULL;
+}
+
+void start_receiver() {
+    if (pthread_create(&rx_thread, NULL, receiver, NULL)) {
+        char *errMsg = strerror(errno);
+        endwin();
+        fprintf(stderr, "Failed to start receive thread\n");
+        fprintf(stderr, "pthread_create: %s\n", errMsg);
+    }
 }
 
 int main(int argc, char *argv[]) {
 
-    t_Args* args = get_args(argc, argv);
+    get_args(argc, argv);
 
     setlocale(LC_ALL, ""); /* make sure UTF8 */
     buf->text = calloc(buf->size, sizeof(char));
 
     init_ui();
     signal(SIGWINCH, resize_handler);
-    int fd = ipx_bind(args->local_network);
-    ipx_set_remote_addr(args);
+    int fd = ipx_bind();
+    ipx_set_remote_addr();
 
+    start_receiver();
     while (TRUE) {
         refresh_all_win();
         user_input();
