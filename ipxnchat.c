@@ -19,9 +19,9 @@ typedef struct t_inputBuffer {
 } t_inputBuffer;
 
 typedef struct t_Args {
-    u_int local_network;
-    u_int remote_network;
-    u_int remote_addr[6];
+    unsigned int local_network;
+    unsigned int remote_network;
+    unsigned int remote_addr[6];
 } t_Args;
 
 WINDOW *remoteWin, *localWin, *inputWin;
@@ -73,7 +73,7 @@ void draw_output_win() {
 }
 
 void draw_input_win() {
-    int y = LINES, x = COLS, halfy = y/2;
+    int y = LINES, x = COLS;
     inputWin = subwin(stdscr, 1, x-4, y-2, 2);
     wrefresh(inputWin);
 }
@@ -155,7 +155,7 @@ void user_input() {
     wrefresh(localWin);
 }
 
-int ipx_bind(u_int net){
+int ipx_bind(u_int64_t net){
     int fd = socket(AF_IPX, SOCK_DGRAM, AF_IPX);
     if (fd < 0) {
         endwin();
