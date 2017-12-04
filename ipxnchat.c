@@ -1,13 +1,28 @@
-#include <curses.h>
-#include <string.h>
 #include <stdio.h>
+#include <locale.h>
+#include <unistd.h>
+#include <string.h>
 #include <stdlib.h>
 #include <signal.h>
+#include <ncursesw/ncurses.h>
+#include <sys/types.h>
+#include <linux/ipx.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 
-# define MAXINPUT 300
+typedef struct t_inputBuffer {
+    int size;
+    int idx;
+    char *text;
+} t_inputBuffer;
 
 WINDOW *remote, *local, *input;
-char inputText[MAXINPUT] = {0};
+// initial buf size is 80 chars
+t_inputBuffer* buf = &(t_inputBuffer){.size=80};
+
+// ipx sockaddr bind to
+struct sockaddr_ipx sipx;
+struct sockaddr_ipx raddr;
 
 void init_colors() {
    start_color();
@@ -44,7 +59,7 @@ void draw_output_win() {
     scrollok(remote, TRUE);
     local = subwin(stdscr, halfy-4, x-4, halfy+1, 2);
     wrefresh(local);
-    scrollok(remote, TRUE);
+    scrollok(local, TRUE);
 }
 
 void draw_input_win() {
@@ -88,49 +103,130 @@ void resize_handler(int sig) {
     signal(SIGWINCH, resize_handler);
 }
 
-int user_input() {
-    int t_idx = 0;
-    int c;
-    int max_input = COLS;
+void user_input() {
+    int cur_y, cur_x, c = 0;
+    buf->idx = 0;
+    _Bool full = FALSE;
+
     while ((c = getch()) != '\n') {
         if (c == KEY_RESIZE || c == ERR) {
            continue;
         } else if (c == KEY_BACKSPACE || c == KEY_LEFT) {
             wprintw(input, "\b \b\0");
-            if (t_idx > 0) {
-                inputText[--t_idx] = '\0';
+            if (buf->idx > 0) {
+                full=FALSE;
+                buf->text[buf->idx++] = '\b';
             }
             wrefresh(input);
         } else {
-            max_input = (COLS - 5) >= MAXINPUT
-                ? MAXINPUT-1 /*screen bigger then max input*/
-                : COLS - 5 /* screen small enought */;
-
-            if (t_idx < max_input) {
-                inputText[t_idx++] = c;
-                wprintw(input, (char *)&c);
+            getyx(input, cur_y, cur_x);
+            if (!full && cur_x < COLS - 5) {
+                if (buf->idx >= buf->size) {
+                    buf->text = realloc(buf->text, sizeof(char)*(buf->size*2));
+                    if (buf->text != NULL) {
+                        buf->size = buf->size*2;
+                    } else {
+                        endwin();
+                        perror("realloc");
+                        exit(1);
+                    }
+                }
+                buf->text[buf->idx++] = c;
+                wprintw(input, "%s", (char*)&c);
             } else {
-                inputText[t_idx] = c;
-                wprintw(input, "\b%s", (char *)&c);
+                full = TRUE;
+                buf->text[buf->idx] = c;
+                wprintw(input, "\b%s", (char*)&c);
             }
             wrefresh(input);
         }
     }
-    inputText[t_idx] = '\0';
+    buf->text[buf->idx] = '\0';
     wclear(input);
     wrefresh(input);
-    return t_idx;
+    wprintw(local, "%s\n", buf->text);
+    wrefresh(local);
+}
+
+int ipx_bind(int net){
+    int fd = socket(AF_IPX, SOCK_DGRAM, AF_IPX);
+    if (fd < 0) {
+        endwin();
+        perror("IPX: socket: ");
+        exit(1);
+    }
+    sipx.sipx_family = AF_IPX;
+    sipx.sipx_network = htonl(net);
+    sipx.sipx_port = htons(0x5000);
+    sipx.sipx_type = 17;
+
+    if (bind(fd, (struct sockaddr *) &sipx, sizeof(sipx)) < 0) {
+        endwin();
+        perror("IPX: bind: ");
+        exit(1);
+    }
+    socklen_t len = sizeof(sipx);
+    // get addr where we are bound to
+    getsockname(fd, (struct sockaddr *) &sipx, &len);
+    return fd;
+}
+
+_Bool is_valid(char c) {
+    return (c >= 'a' && c <= 'f') || (c >= 'a' && c <= 'F') || (c >= '0' && c <= '9');
+}
+
+void ipx_set_remote_addr(char remote_addr[12]) {
+    char hex[5] = "0x00\0";
+    for (int i = 0; i < 6; i++) {
+        char f = remote_addr[i*2];
+        char s = remote_addr[i*2+1];
+        if (is_valid(f) && is_valid (s)) {
+            hex[2] = f;
+            hex[3] = s;
+        } else {
+            endwin();
+            printf(
+                "Invalid remote addr %12s, expect MAC address in format 'AABBCCDDEEFF'\n",
+                remote_addr
+            );
+            exit(1);
+        }
+        wprintw(remote, "%s\n", hex);
+        sipx.sipx_node[i] = atoi(hex);
+    }
+}
+
+void ipx_send(int fd, const char *msg, uint msg_size) {
+    if (buf->idx > 0) {
+        ssize_t result = sendto(
+            fd,
+            msg, msg_size,
+            0,
+            (struct sockaddr *)&sipx, sizeof(sipx)
+        );
+        if (result < 0) {
+            endwin();
+            perror("IPX: send: ");
+            exit(1);
+        }
+    }
 }
 
 int main() {
     signal(SIGWINCH, resize_handler);
-    init_ui();
+    setlocale(LC_ALL, ""); /* make sure UTF8 */
+    buf->text = calloc(buf->size, sizeof(char));
 
-    // TODO bind
+    init_ui();
+    int net_num = 0;
+    int fd = ipx_bind(net_num);
+    char remote_addr[12] = "abcdeffedcba";
+    ipx_set_remote_addr(remote_addr);
 
     while (TRUE) {
         refresh_all_win();
         user_input();
+        ipx_send(fd, buf->text, buf->idx+1);
     };
     endwin();
     return 0;
