@@ -13,30 +13,33 @@
 #include <sys/socket.h>
 #include <pthread.h>
 
+// buffer for user input
 typedef struct t_inputBuffer {
     int size;
     int idx;
     char *text;
 } t_inputBuffer;
+// initial buf size is 80 chars
+t_inputBuffer* buf = &(t_inputBuffer){.size=80};
 
+// command arguments
 typedef struct t_Args {
     u_int32_t local_network;
     u_int32_t remote_network;
     unsigned char remote_addr[6];
 } t_Args;
+// preallocate
 t_Args args = {0};
 
+// all chat window
 WINDOW *remoteWin, *localWin, *inputWin;
 char remoteTitle[46] = "[ Remote ]\0";
 char localTitle[45] = "[ Local ]\0";
-// initial buf size is 80 chars
-t_inputBuffer* buf = &(t_inputBuffer){.size=80};
 
 // ipx sockaddr bind to
 struct sockaddr_ipx sipx;
-// ipx remote socket addr
 
-// receiver
+// receiver thread
 pthread_t rx_thread;
 
 void init_colors() {
@@ -51,6 +54,8 @@ void init_colors() {
    init_pair(7, COLOR_YELLOW, -1);
 }
 
+// draw border and split screen
+// place initial titles for panels
 void draw_main_box() {
     int y = LINES, x = COLS, halfy = y/2;
     box(stdscr, 0, 0);
@@ -73,6 +78,7 @@ void draw_main_box() {
     refresh();
 }
 
+// add subwindow for remote messages (from remote clients)
 void draw_output_win() {
     int y = LINES, x = COLS, halfy = y/2;
     remoteWin = subwin(stdscr, halfy-2, x-4, 1, 2);
@@ -83,12 +89,14 @@ void draw_output_win() {
     scrollok(localWin, TRUE);
 }
 
+// subwindows for sended user input
 void draw_input_win() {
     int y = LINES, x = COLS;
     inputWin = subwin(stdscr, 1, x-4, y-2, 2);
     wrefresh(inputWin);
 }
 
+// initialize ncurses user interface
 void init_ui() {
     if (initscr() == NULL) {
         fprintf(stderr, "Failed to initialize screen\n");
@@ -109,6 +117,7 @@ void refresh_all_win(){
     wrefresh(inputWin);
 }
 
+// handle terminal window size changes
 void resize_handler(int sig) {
     endwin();
     refresh();
@@ -120,6 +129,9 @@ void resize_handler(int sig) {
     signal(SIGWINCH, resize_handler);
 }
 
+// handle user input
+// this function try properly handle utf8 text
+// on backpace just add '\b' and do not delete alredy added text
 void user_input() {
     int cur_y, cur_x, c = 0;
     buf->idx = 0;
@@ -144,6 +156,7 @@ void user_input() {
             }
             wrefresh(inputWin);
         } else {
+            // read user input restricted with current terminal width
             getyx(inputWin, cur_y, cur_x);
             if (!full && cur_x < COLS - 5) {
                 if (buf->idx >= buf->size) {
@@ -405,9 +418,12 @@ int main(int argc, char *argv[]) {
     ipx_set_remote_addr();
 
     start_receiver();
-    while (TRUE) {
+    while (1) {
+        // redraw screens
         refresh_all_win();
+        // handle user input
         user_input();
+        // send the resulting message
         ipx_send(fd);
     };
     endwin();
