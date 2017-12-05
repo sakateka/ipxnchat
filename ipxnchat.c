@@ -128,6 +128,14 @@ void user_input() {
     while ((c = getch()) != '\n') {
         if (c == KEY_RESIZE || c == ERR) {
            continue;
+        } else if (c == 27) {
+            // alt+enter or alt+q
+            if ((c = getch()) == '\n' || c == 'q') {
+                endwin();
+                puts("Bye!\n");
+                exit(EXIT_SUCCESS);
+            }
+            ungetch(c);
         } else if (c == KEY_BACKSPACE || c == KEY_LEFT) {
             wprintw(inputWin, "\b \b\0");
             if (buf->idx > 0) {
