@@ -129,6 +129,17 @@ void resize_handler(int sig) {
     signal(SIGWINCH, resize_handler);
 }
 
+void realloc_input_buf() {
+    buf->text = realloc(buf->text, sizeof(char)*(buf->size*2));
+    if (buf->text != NULL) {
+        buf->size = buf->size*2;
+    } else {
+        endwin();
+        perror("realloc");
+        exit(EXIT_FAILURE);
+    }
+}
+
 // handle user input
 // this function try properly handle utf8 text
 // on backpace just add '\b' and do not delete alredy added text
@@ -152,6 +163,9 @@ void user_input() {
             wprintw(inputWin, "\b \b\0");
             if (buf->idx > 0) {
                 full=FALSE;
+                if (buf->idx >= buf->size) {
+                    realloc_input_buf();
+                }
                 buf->text[buf->idx++] = '\b';
             }
             wrefresh(inputWin);
@@ -160,14 +174,7 @@ void user_input() {
             getyx(inputWin, cur_y, cur_x);
             if (!full && cur_x < COLS - 5) {
                 if (buf->idx >= buf->size) {
-                    buf->text = realloc(buf->text, sizeof(char)*(buf->size*2));
-                    if (buf->text != NULL) {
-                        buf->size = buf->size*2;
-                    } else {
-                        endwin();
-                        perror("realloc");
-                        exit(EXIT_FAILURE);
-                    }
+                    realloc_input_buf();
                 }
                 buf->text[buf->idx++] = c;
                 wprintw(inputWin, "%s", (char*)&c);
